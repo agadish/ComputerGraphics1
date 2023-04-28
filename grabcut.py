@@ -1,6 +1,7 @@
 import numpy as np
 import cv2
 import argparse
+import sklearn.mixture
 
 GC_BGD = 0 # Hard bg pixel
 GC_FGD = 1 # Hard fg pixel, will not be used
@@ -9,7 +10,7 @@ GC_PR_FGD = 3 # Soft fg pixel
 
 
 # Define the GrabCut algorithm function
-def grabcut(img, rect, n_iter=5):
+def grabcut(img, rect, K=5):
     # Assign initial labels to the pixels based on the bounding box
     mask = np.zeros(img.shape[:2], dtype=np.uint8)
     mask.fill(GC_BGD)
@@ -19,12 +20,12 @@ def grabcut(img, rect, n_iter=5):
     mask[y:y+h, x:x+w] = GC_PR_FGD
     mask[rect[1]+rect[3]//2, rect[0]+rect[2]//2] = GC_FGD
 
-    bgGMM, fgGMM = initalize_GMMs(img, mask)
+    bgGMM, fgGMM = initalize_GMMs(img, mask, K=K)
 
     num_iters = 1000
     for i in range(num_iters):
         #Update GMM
-        bgGMM, fgGMM = update_GMMs(img, mask, bgGMM, fgGMM)
+        bgGMM, fgGMM = update_GMMs(img, mask, bgGMM, fgGMM, K=K)
 
         mincut_sets, energy = calculate_mincut(img, mask, bgGMM, fgGMM)
 
@@ -37,17 +38,27 @@ def grabcut(img, rect, n_iter=5):
     return mask, bgGMM, fgGMM
 
 
-def initalize_GMMs(img, mask):
-    # TODO: implement initalize_GMMs
-    bgGMM = None
-    fgGMM = None
+def initalize_GMMs(img, mask, K=5):
+    fgVals = img[(GC_FGD == mask) + (GC_PR_FGD == mask)]
+    bgVals = img[(GC_BGD == mask) + (GC_PR_BGD == mask)]
+
+    bgGMM = sklearn.mixture.GaussianMixture(K, init_params='kmeans').fit(bgVals)
+    fgGMM = sklearn.mixture.GaussianMixture(K, init_params='kmeans').fit(fgVals)
 
     return bgGMM, fgGMM
 
 
 # Define helper functions for the GrabCut algorithm
-def update_GMMs(img, mask, bgGMM, fgGMM):
+def update_GMMs(img, mask, bgGMM:sklearn.mixture.GaussianMixture, fgGMM, K=5):
     # TODO: implement GMM component assignment step
+    for i in range(K):
+        mean = bgGMM.means_[i,:]
+        cov = bgGMM.covariances_[i,:,:]
+        bg_cov = img[mask]
+        icov = np.linalg.inv(cov)
+        w = bgGMM.weights_[i]
+        deter = np.linalg.det(cov)
+
     return bgGMM, fgGMM
 
 

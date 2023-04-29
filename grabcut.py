@@ -2,6 +2,8 @@ import numpy as np
 import cv2
 import argparse
 import sklearn.mixture
+import scipy.stats
+from igraph import Graph
 
 GC_BGD = 0 # Hard bg pixel
 GC_FGD = 1 # Hard fg pixel, will not be used
@@ -37,20 +39,67 @@ def grabcut(img, rect, K=5):
     # Return the final mask and the GMMs
     return mask, bgGMM, fgGMM
 
+class MyGMM(object):
+    def __init__(self, k):
+        self._k = k 
+    
+    def calc_dist_weights(self, values):
+        # TODO: calcualte by ourselves
+        mixture = sklearn.mixture.GaussianMixture(self._k, init_params='kmeans').fit(values)
+        self._mixture = mixture
+        self._dists = [scipy.stat.multivariate_normal(mixture.means_[i], mixture.covariances_[i])
+                       for i in range(self._k)]
+    
+    @property
+    def dists(self):
+        return self._dists
+    
+    @property
+    def means(self):
+        return self._mixture.means_
+    
+    @property
+    def covariances(self):
+        return self._mixture.covariances_
+    
+    @property
+    def k(self):
+        return self._k
+    
+    @property
+    def weights(self):
+        return self._mixture.weights_
+    
+    def get_beta(self, img):
+        flat_img = img.flatten()
+        avg_square_distance = np.mean([)
+        beta = np.linalg.inv(2 * (dist ** 2))
+
+
 
 def initalize_GMMs(img, mask, K=5):
-    fgVals = img[(GC_FGD == mask) + (GC_PR_FGD == mask)]
-    bgVals = img[(GC_BGD == mask) + (GC_PR_BGD == mask)]
+    # fgVals = img[(GC_FGD == mask) + (GC_PR_FGD == mask)]
+    # bgVals = img[(GC_BGD == mask) + (GC_PR_BGD == mask)]
 
-    bgGMM = sklearn.mixture.GaussianMixture(K, init_params='kmeans').fit(bgVals)
-    fgGMM = sklearn.mixture.GaussianMixture(K, init_params='kmeans').fit(fgVals)
+    fgGMM = MyGMM(K)
+    # fgGMM.fit(fgVals)
+
+    bgGMM = MyGMM(K)
+    # bgGMM.fit(bgVals)
 
     return bgGMM, fgGMM
 
 
 # Define helper functions for the GrabCut algorithm
-def update_GMMs(img, mask, bgGMM:sklearn.mixture.GaussianMixture, fgGMM, K=5):
+def update_GMMs(img, mask, bgGMM, fgGMM, K=5):
+    fgVals = img[(GC_FGD == mask) + (GC_PR_FGD == mask)]
+    bgVals = img[(GC_BGD == mask) + (GC_PR_BGD == mask)]
+
+    bgDist, bgWeighst = bgGMM.calc_dist_weights(bgVals)
+    fgDist, fgWeights = fgGMM.calc_dist_weights(fgVals)
+
     # TODO: implement GMM component assignment step
+    choose_gaussian = lambda rgb: np.argmax(fgGMM)  
     for i in range(K):
         mean = bgGMM.means_[i,:]
         cov = bgGMM.covariances_[i,:,:]
@@ -61,11 +110,24 @@ def update_GMMs(img, mask, bgGMM:sklearn.mixture.GaussianMixture, fgGMM, K=5):
 
     return bgGMM, fgGMM
 
+def calculate_N(img, m, n, beta):
+    dist = np.linalg.norm(img[m] - img[n])
+    result = 50 / np.linalg.norm(m, n) * np.exp(-beta * (dist ** 2))
+
+def calculate_D(z, means, covs, weights, K=5):
+    result = -np.log(sum(
+        [np.cross(weights[i] / np.sqrt(np.linalg.det(covs[i])),
+                  np.exp(0.5 * np.matmul(np.matmul(np.transpose(z - means[i]), np.linalg.inv(covs[i])), (z - means[i]))))
+        for i in range(K)]
+    ))
+    return result
 
 def calculate_mincut(img, mask, bgGMM, fgGMM):
     # TODO: implement energy (cost) calculation step and mincut
     min_cut = [[], []]
     energy = 0
+    g = Graph
+    U = sum([calculate_D(rgb, bgGMM.means, bgGMM.covariances, bgGMM.weights, bgGMM.k) for rgb in img.flatten()])
     return min_cut, energy
 
 

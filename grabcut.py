@@ -4,12 +4,14 @@ import argparse
 import sklearn.mixture
 import scipy.stats
 from igraph import Graph
+import itertools
 
 GC_BGD = 0 # Hard bg pixel
 GC_FGD = 1 # Hard fg pixel, will not be used
 GC_PR_BGD = 2 # Soft bg pixel
 GC_PR_FGD = 3 # Soft fg pixel
-
+SOURCE_NODE = 'source'
+SINK_NODE = 'sink'
 
 # Define the GrabCut algorithm function
 def grabcut(img, rect, n_components=5):
@@ -166,43 +168,89 @@ def calculate_mincut(img, mask, bgGMM, fgGMM):
     energy = 0
     
     # Build graph
-    img_f = img.flatten()
-    mask_f = mask.flatten()
     beta = calculate_beta(img)
     K_val = calculate_K(img, mask, beta)
+    img_f = img.reshape(-1, 3)
+    mask_f = mask.flatten()
     g = Graph()
-    g.add_vertex(name='source')
-    g.add_vertex(name='sink')
-    g.add_vertices(img_f)
+    g.add_vertex(name=SOURCE_NODE)
+    g.add_vertex(name=SINK_NODE)
+    g.add_vertices(range(img_f.shape[0]))
+    def index_to_weights(z):
+        if GC_BGD == mask_f[z]:
+            return [K_val]
+        if GC_FGD == mask_f[z]:
+            return [K_val]
+        if mask_f[z] in (GC_PR_BGD, GC_PR_FGD, ):
+            bg_weight = calculate_D(img_f[z], bgGMM.means, bgGMM.covariances, bgGMM.weights, bgGMM.n_components)
+            fg_weight = calculate_D(img_f[z], fgGMM.means, fgGMM.covariances, fgGMM.weights, fgGMM.n_components)
+            return [bg_weight, fg_weight]
+        raise TypeError(f'Unknown mask type at {z}')
+    
     def index_to_edges(z):
-        if GC_BGD == mask[z]:
-            return [('source', z, K_val)]
-        if GC_FGD == mask[z]:
-            return [(z, 'sink', K_val)]
-        if mask[z] in (GC_PR_BGD, GC_PR_FGD, ):
-            bg_edge = ('source', z, calculate_D(img[z], bgGMM.means, bgGMM.covariances, bgGMM.weights, bgGMM.n_components))
-            fg_edge = (z, 'sink', calculate_D(img[z], fgGMM.means, fgGMM.covariances, fgGMM.weights, fgGMM.n_components))
+        if GC_BGD == mask_f[z]:
+            return [(SOURCE_NODE, z, )]
+        if GC_FGD == mask_f[z]:
+            return [(z, SINK_NODE, )]
+        if mask_f[z] in (GC_PR_BGD, GC_PR_FGD, ):
+            bg_edge = (SOURCE_NODE, z, )
+            fg_edge = (z, SINK_NODE, )
             return [bg_edge, fg_edge]
         raise TypeError(f'Unknown mask type at {z}')
 
-    edges_sets = [index_to_edges(z) for z in np.ndindex(img.shape[:-1])]
-    edges = [e for e in s for s in edges_sets]
-    g.add_adges(edges)
-    min_cut = g.mincut()
-    energy = min_cut.energy
+    edges_sets = [index_to_edges(z) for z in range(img_f.shape[0])]
+    edges = list(itertools.chain(*edges_sets))
+    weights_sets = [index_to_weights(z) for z in range(img_f.shape[0])]
+    weights = list(itertools.chain(*weights_sets))
+    
+    g.add_edges(edges)
+    min_cut = g.st_mincut(SOURCE_NODE, SINK_NODE, weights)
+    energy = min_cut.value
     # U = sum([calculate_D(rgb, bgGMM.means, bgGMM.covariances, bgGMM.weights, bgGMM.n_components) for rgb in img.flatten()])
     
     return min_cut, energy
 
 
-def update_mask(mincut_sets, mask):
+def update_mask(mincut_sets, mask): 
     # TODO: implement mask update step
+    mask_f = mask.flatten()
+    row1, col1 = np.unravel_index(mincut_sets[0])
+    indices1 = zip(row1, col1)
+    row2, col2 = np.unravel_index(mincut_sets[0])
+    indices2 = zip(row2, col2)
+    
+    # Decide which is which by the majority of background pixels
+    if np.sum(mask_f[indices1] == GC_BGD) > np.sum(mask_f[indices2] == GC_BGD):
+        bg_indices = indices1
+        fg_indices = indices2
+    else:
+        bg_indices = indices2
+        fg_indices = indices1
+
+    # Change PR indexes accordingly
+    pr_indexes = np.where((GC_PR_FGD == mask_f) + (GC_PR_BGD == mask_f))
+    mask[pr_indexes] = np.where(np.isin(bg_indices[pr_indexes], bg_indices), GC_PR_BGD, GC_PR_FGD)
+
     return mask
 
-
+STATIC_ENERGY_CONVERGENCE_COMBO = 5
+STATIC_ENERGY_THRESHOLD = 0.1
+g_static_energy_combo = 0
+g_prev_energy = None
 def check_convergence(energy):
     # TODO: implement convergence check
-    convergence = False
+    global g_static_energy_combo
+    global g_prev_energy
+    
+    if g_prev_energy is not None:
+        if np.abs(energy - g_prev_energy) < STATIC_ENERGY_THRESHOLD:
+            g_static_energy_combo += 1
+        else:
+            g_static_energy_combo = 0
+    
+    g_prev_energy = energy
+    convergence = g_static_energy_combo >= STATIC_ENERGY_CONVERGENCE_COMBO
+
     return convergence
 
 

@@ -35,6 +35,7 @@ def grabcut(img, rect, n_components=5):
 
         mask = update_mask(mincut_sets, mask)
 
+        print(f'Iteration {i}: energy={energy}')
         if check_convergence(energy):
             break
 
@@ -173,9 +174,9 @@ def calculate_mincut(img, mask, bgGMM, fgGMM):
     img_f = img.reshape(-1, 3)
     mask_f = mask.flatten()
     g = Graph()
+    g.add_vertices(range(img_f.shape[0]))
     g.add_vertex(name=SOURCE_NODE)
     g.add_vertex(name=SINK_NODE)
-    g.add_vertices(range(img_f.shape[0]))
     def index_to_weights(z):
         if GC_BGD == mask_f[z]:
             return [K_val]
@@ -204,8 +205,10 @@ def calculate_mincut(img, mask, bgGMM, fgGMM):
     weights = list(itertools.chain(*weights_sets))
     
     g.add_edges(edges)
-    min_cut = g.st_mincut(SOURCE_NODE, SINK_NODE, weights)
-    energy = min_cut.value
+    min_cut_ext = g.st_mincut(SOURCE_NODE, SINK_NODE, weights)
+    source_sink_indexes = [g.vs.find(SOURCE_NODE).index, g.vs.find(SINK_NODE).index]
+    min_cut = tuple([i for i in cut if i not in source_sink_indexes] for cut in min_cut_ext)
+    energy = min_cut_ext.value
     # U = sum([calculate_D(rgb, bgGMM.means, bgGMM.covariances, bgGMM.weights, bgGMM.n_components) for rgb in img.flatten()])
     
     return min_cut, energy
@@ -214,27 +217,23 @@ def calculate_mincut(img, mask, bgGMM, fgGMM):
 def update_mask(mincut_sets, mask): 
     # TODO: implement mask update step
     mask_f = mask.flatten()
-    row1, col1 = np.unravel_index(mincut_sets[0])
-    indices1 = zip(row1, col1)
-    row2, col2 = np.unravel_index(mincut_sets[0])
-    indices2 = zip(row2, col2)
     
-    # Decide which is which by the majority of background pixels
-    if np.sum(mask_f[indices1] == GC_BGD) > np.sum(mask_f[indices2] == GC_BGD):
-        bg_indices = indices1
-        fg_indices = indices2
-    else:
-        bg_indices = indices2
-        fg_indices = indices1
+    # foreground to background
+    pr_fg_indices = GC_PR_FGD == mask_f
+    pr_bg_indices = GC_PR_BGD == mask_f
+    bg_mincut_indices = np.isin(np.arange(mask_f.size), mincut_sets[0])
+    fg_mincut_indices = np.isin(np.arange(mask_f.size), mincut_sets[1])
 
-    # Change PR indexes accordingly
-    pr_indexes = np.where((GC_PR_FGD == mask_f) + (GC_PR_BGD == mask_f))
-    mask[pr_indexes] = np.where(np.isin(bg_indices[pr_indexes], bg_indices), GC_PR_BGD, GC_PR_FGD)
+    fg_to_bg_mask = (np.logical_and(pr_fg_indices, bg_mincut_indices)).nonzero()
+    bg_to_fg_mask = (np.logical_and(pr_bg_indices, fg_mincut_indices)).nonzero()
 
-    return mask
+    mask_f[fg_to_bg_mask] = GC_PR_BGD;
+    mask_f[bg_to_fg_mask] = GC_PR_FGD;
+
+    return mask_f.reshape(mask.shape)
 
 STATIC_ENERGY_CONVERGENCE_COMBO = 5
-STATIC_ENERGY_THRESHOLD = 0.1
+STATIC_ENERGY_THRESHOLD = 2000
 g_static_energy_combo = 0
 g_prev_energy = None
 def check_convergence(energy):
@@ -256,8 +255,18 @@ def check_convergence(energy):
 
 def cal_metric(predicted_mask, gt_mask):
     # TODO: implement metric calculation
+    if not gt_mask.size:
+        accuracy = 1
+    else:
+        accuracy = np.sum(predicted_mask != gt_mask) / gt_mask.size
 
-    return 100, 100
+    predicted_intersection_count = sum(np.logical_and(predicted_mask == gt_mask, (predicted_mask == GC_PR_FGD) + (predicted_mask == GC_FGD)))
+    total_predictable = sum((predicted_mask == GC_PR_FGD) + (predicted_mask == GC_FGD) + (gt_mask == GC_PR_FGD) + (gt_mask == GC_FGD))
+    if not total_predictable:
+        jaccard_value = 1
+    else:
+        jaccard_value = predicted_intersection_count / total_predictable
+    return accuracy / jaccard_value
 
 def parse():
     parser = argparse.ArgumentParser()

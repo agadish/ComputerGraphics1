@@ -5,6 +5,7 @@ import sklearn.mixture
 import scipy.stats
 from igraph import Graph
 import itertools
+np.warnings.filterwarnings('ignore')
 
 GC_BGD = 0 # Hard bg pixel
 GC_FGD = 1 # Hard fg pixel, will not be used
@@ -12,6 +13,8 @@ GC_PR_BGD = 2 # Soft bg pixel
 GC_PR_FGD = 3 # Soft fg pixel
 SOURCE_NODE = 'source'
 SINK_NODE = 'sink'
+EPSILON = 0.00001
+import time
 
 # Define the GrabCut algorithm function
 def grabcut(img, rect, n_components=5):
@@ -29,13 +32,20 @@ def grabcut(img, rect, n_components=5):
     num_iters = 1000
     for i in range(num_iters):
         #Update GMM
-        bgGMM, fgGMM = update_GMMs(img, mask, bgGMM, fgGMM, n_components=n_components)
+        t1 = time.time()
+        print(f'[iter {i}] Running update_GMMs....')
+        bgGMM, fgGMM = update_GMMs(img, mask, bgGMM, fgGMM)
+        t2 = time.time()
+        print(f'[iter {i}] Took {(t2-t1):.1f}sec. Running calculate_mincut...')
 
         mincut_sets, energy = calculate_mincut(img, mask, bgGMM, fgGMM)
+        t3 = time.time()
+        print(f'[iter {i}] Took {(t3-t2):.1f}sec, energy {energy:.1f}. Running update_mask...')
 
         mask = update_mask(mincut_sets, mask)
+        t4 = time.time()
+        print(f'[iter {i}] Took {(t4-t3):.1f}sec. Running checking convergence...')
 
-        print(f'Iteration {i}: energy={energy}')
         if check_convergence(energy):
             break
 
@@ -100,7 +110,7 @@ class NLinks(object):
         @brief |z_m - z_n|^2 only for down neighbours
         """
         if self._down_square_diff is None:
-            self._down_square_diff = np.square(img[:-1, :] - img[1:, :])
+            self._down_square_diff = np.sum(np.square(self._img[:-1, :] - self._img[1:, :]), axis=-1)
         return self._down_square_diff
 
     @property
@@ -109,7 +119,7 @@ class NLinks(object):
         @brief |z_m - z_n|^2 only for right neighbours
         """
         if self._right_square_diff is None:
-            self._right_square_diff = np.square(img[:, :-1] - img[:, 1:])
+            self._right_square_diff = np.sum(np.square(self._img[:, :-1] - self._img[:, 1:]), axis=-1)
         return self._right_square_diff
 
     @property
@@ -118,7 +128,7 @@ class NLinks(object):
         @brief |z_m - z_n|^2 only for downright neighbours
         """
         if self._downright_square_diff is None:
-            self._downright_square_diff = np.square(img[:-1, :-1] - img[1:, 1:])
+            self._downright_square_diff = np.sum(np.square(self._img[:-1, :-1] - self._img[1:, 1:]), axis=-1)
         return self._downright_square_diff
 
 
@@ -128,7 +138,7 @@ class NLinks(object):
         @brief |z_m - z_n|^2 only for downleft neighbours
         """
         if self._downleft_square_diff is None:
-            self._downleft_square_diff = np.square(img[:-1, 1:] - img[1:, :-1])
+            self._downleft_square_diff = np.sum(np.square(self._img[:-1, 1:] - self._img[1:, :-1]), axis=-1)
         return self._downleft_square_diff
 
     @property
@@ -145,7 +155,7 @@ class NLinks(object):
                             self.downleft_square_diff, )
         expected_distance_square_with_factor = np.sum([np.sum(s) for s in all_square_diffs])
         # 4 * h * w - 3 * (h + w) + 2
-        factor = 4 * img.shape[0] * img.shape[1] - 3 * (img.shape[0] + img.shape[1]) + 2
+        factor = 4 * self._img.shape[0] * self._img.shape[1] - 3 * (self._img.shape[0] + self._img.shape[1]) + 2
         expected_distance_square = expected_distance_square_with_factor / factor    # 4hw - 3w -3h + 2
         if expected_distance_square == 0:
             expected_distance_square = 0.00001
@@ -242,6 +252,7 @@ class TLinks(object):
         self._orig_mask_shape = None
         self._mask_f = None
         self._K = None
+        self._edges = None
 
     def update_mask(self, mask):
         self._orig_mask_shape = mask.shape
@@ -264,33 +275,21 @@ class TLinks(object):
         mask_f = self._mask_f
         img_f = self._img_f
         if GC_BGD == mask_f[z]:
-            return [self._K]
+            return [0, self._K]
         if GC_FGD == mask_f[z]:
-            return [self._K]
+            return [self._K, 0]
         if mask_f[z] in (GC_PR_BGD, GC_PR_FGD, ):
+            fg_weight = self.calculate_D(img_f[z], fgGMM.means_, fgGMM.determinants_, fgGMM.icovariances_, fgGMM.weights_, fgGMM.n_components)
             bg_weight = self.calculate_D(img_f[z], bgGMM.means_, bgGMM.determinants_, bgGMM.icovariances_, bgGMM.weights_, bgGMM.n_components)
-            fg_weight = self.calculate_D(img_f[z], fgGMM.means_, bgGMM.determinants_, bgGMM.icovariances_, fgGMM.weights_, fgGMM.n_components)
-            return [bg_weight, fg_weight]
+            return [fg_weight, bg_weight]
         raise TypeError(f'Unknown mask type at {z}')
     
-    @requires_mask
-    def index_to_edges(self, z, bgGMM, fgGMM):
-        #TODO: np.where np.isin
-        mask_f = self._mask_f
-        if GC_BGD == mask_f[z]:
-            return [(SOURCE_NODE, z, )]
-        if GC_FGD == mask_f[z]:
-            return [(z, SINK_NODE, )]
-        if mask_f[z] in (GC_PR_BGD, GC_PR_FGD, ):
-            bg_edge = (SOURCE_NODE, z, )
-            fg_edge = (z, SINK_NODE, )
-            return [bg_edge, fg_edge]
-        raise TypeError(f'Unknown mask type at {z}')
-    
-    def get_edges(self, bgGMM, fgGMM):
-        edges_sets = [self.index_to_edges(z, bgGMM, fgGMM) for z in range(self._img_f.shape[0])]
-        edges = list(itertools.chain(*edges_sets))
-        return edges
+    @property
+    def edges(self):
+        if self._edges is None:
+            dual_edges = [[(SOURCE_NODE, z), (z, SINK_NODE) ] for z in range(self._img_f.shape[0])]
+            self._edges = list(itertools.chain(*dual_edges))
+        return self._edges
     
     def get_weights(self, bgGMM, fgGMM):
         weights_sets = [self.index_to_weights(z, bgGMM, fgGMM) for z in range(self._img_f.shape[0])]
@@ -305,7 +304,7 @@ class Grabcut(object):
     
     def calculate_edges_weights(self, mask, bgGMM, fgGMM):
         self._tlinks.update_mask(mask)
-        edges = self._nlinks.edges + self._tlinks.get_edges(bgGMM, fgGMM)
+        edges = self._nlinks.edges + self._tlinks.edges
         weights = self._nlinks.weights + self._tlinks.get_weights(bgGMM, fgGMM)
         return edges, weights
     
@@ -317,6 +316,9 @@ class Grabcut(object):
     def weights(self):
         return self._nlinks.weights + self._tlinks.weights
     
+    def update_mask(self, mask):
+        self._tlinks.update_mask(mask)
+    
 
 class MyGMM(object):
     def __init__(self, n_components):
@@ -324,9 +326,11 @@ class MyGMM(object):
         self._nlinks = None
         self._icovariances = None
         self._determinants = None
+        self._data_dim = 3
     
     def fit(self, values):
         # TODO: calcualte by ourselves
+        self._n_components = min(self._n_components, len(values))
         mixture = sklearn.mixture.GaussianMixture(self.n_components, init_params='kmeans').fit(values)
         self._mixture = mixture
         self._dists = [scipy.stats.multivariate_normal(mixture.means_[i], mixture.covariances_[i])
@@ -342,6 +346,8 @@ class MyGMM(object):
     
     @property
     def covariances_(self):
+        if 1 == self.n_components:
+            return np.identity(self._data_dim) * EPSILON
         return self._mixture.covariances_
         
     @property
@@ -377,11 +383,19 @@ def initalize_GMMs(img, mask, n_components=5):
 
 
 # Define helper functions for the GrabCut algorithm
-def update_GMMs(img, mask, bgGMM, fgGMM, n_components=5):
+def update_GMMs(img, mask, bgGMM, fgGMM):
     fgVals = img[(GC_FGD == mask) + (GC_PR_FGD == mask)]
     bgVals = img[(GC_BGD == mask) + (GC_PR_BGD == mask)]
-    bgGMM.fit(bgVals)
-    fgGMM.fit(fgVals)   
+    
+    if not np.any(bgVals):
+        bgGMM = None
+    else:
+        bgGMM.fit(bgVals)
+
+    if not np.any(fgVals):
+        fgGMM = None
+    else:
+        fgGMM.fit(fgVals)   
 
     return bgGMM, fgGMM
 
@@ -391,13 +405,15 @@ def calculate_mincut(img, mask, bgGMM, fgGMM):
     min_cut = [[], []]
     energy = 0
     # Build graph
-    img_f = img.reshape(-1, 3)
-    mask_f = mask.flatten()
+    if not bgGMM or not fgGMM:
+        return min_cut, energy
+    
     g = Graph()
-    g.add_vertices(range(img_f.shape[0]))
+    g.add_vertices(range(img.shape[0] * img.shape[1]))
     g.add_vertex(name=SOURCE_NODE)
     g.add_vertex(name=SINK_NODE)
     edges, weights = g_grabcut.calculate_edges_weights(mask, bgGMM, fgGMM)
+    print(f'added {len(edges)} edges, correspoding {len(weights)} weights')
     g.add_edges(edges)
     min_cut_ext = g.st_mincut(SOURCE_NODE, SINK_NODE, weights)
     source_sink_indexes = [g.vs.find(SOURCE_NODE).index, g.vs.find(SINK_NODE).index]
@@ -406,12 +422,19 @@ def calculate_mincut(img, mask, bgGMM, fgGMM):
     
     return min_cut, energy
 
-
-def update_mask(mincut_sets, mask): 
-    condition__gc_pr_bgd = np.logical_and(np.isin(mask, mincut_sets[0]), mask == GC_PR_FGD)
-    condition__gc_pr_fgd = np.logical_and(np.isin(mask, mincut_sets[1]), mask == GC_PR_BGD)
+def update_mask(mincut_sets, mask):
+    if not np.any(mincut_sets):
+        return None
+    
+    old_mask = mask
+    mask_f = mask.flatten()
+    condition__gc_pr_fgd = np.logical_and(np.isin(np.arange(mask_f.size), mincut_sets[0]), mask_f == GC_PR_BGD)
+    condition__gc_pr_bgd = np.logical_and(np.isin(np.arange(mask_f.size), mincut_sets[1]), mask_f == GC_PR_FGD)
     mask = np.where(condition__gc_pr_bgd, GC_PR_BGD,
-                    np.where(condition__gc_pr_fgd, GC_PR_FGD, mask))
+                    np.where(condition__gc_pr_fgd, GC_PR_FGD, mask_f)).reshape(mask.shape)
+    global g_grabcut
+    g_grabcut.update_mask(mask)
+    print(f'Number of mask changes (prev {np.sum(old_mask)} new {np.sum(mask)}: {np.sum(np.nonzero(old_mask - mask))}')
     return mask
 
 STATIC_ENERGY_CONVERGENCE_COMBO = 5
@@ -419,6 +442,9 @@ STATIC_ENERGY_THRESHOLD = 2000
 g_static_energy_combo = 0
 g_prev_energy = None
 def check_convergence(energy):
+    if not energy:
+        return True
+    
     # TODO: implement convergence check
     global g_static_energy_combo
     global g_prev_energy

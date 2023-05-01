@@ -6,6 +6,7 @@ import scipy.stats
 from igraph import Graph
 import itertools
 np.warnings.filterwarnings('ignore')
+import time
 import matplotlib.pyplot as plt
 
 GC_BGD = 0 # Hard bg pixel
@@ -15,8 +16,10 @@ GC_PR_FGD = 3 # Soft fg pixel
 SOURCE_NODE = 'source'
 SINK_NODE = 'sink'
 EPSILON = 0.00001
+STATIC_ENERGY_CONVERGENCE_COMBO = 2
+STATIC_ENERGY_THRESHOLD = 20000
 
-import time
+
 
 # Define the GrabCut algorithm function
 def grabcut(img, rect, n_components=5):
@@ -159,9 +162,10 @@ class NLinks(object):
                             self.downright_square_diff,
                             self.downleft_square_diff, )
         expected_distance_square_with_factor = np.sum([np.sum(s) for s in all_square_diffs])
-        # 4 * h * w - 3 * (h + w) + 2
-        factor = 4 * self._img.shape[0] * self._img.shape[1] - 3 * (self._img.shape[0] + self._img.shape[1]) + 2
-        expected_distance_square = expected_distance_square_with_factor / factor    # 4hw - 3w -3h + 2
+        # 4 * h * w - 3 * (h + w) + 8
+        # See documentation "1.1.1 Edges count"
+        factor = 4 * self._img.shape[0] * self._img.shape[1] - 3 * (self._img.shape[0] + self._img.shape[1]) + 8
+        expected_distance_square = expected_distance_square_with_factor / factor
         if expected_distance_square == 0:
             expected_distance_square = 0.00001
         beta = 1 / (2 * expected_distance_square)
@@ -473,8 +477,6 @@ def update_mask(mincut_sets, mask):
     print(f'Number of mask changes (prev {np.sum(old_mask)} new {np.sum(mask)}: {np.sum(np.nonzero(old_mask - mask))}')
     return mask
 
-STATIC_ENERGY_CONVERGENCE_COMBO = 5
-STATIC_ENERGY_THRESHOLD = 2000
 g_static_energy_combo = 0
 g_prev_energy = None
 def check_convergence(energy):
@@ -487,7 +489,7 @@ def check_convergence(energy):
     global g_prev_energy
     
     if g_prev_energy is not None:
-        if np.abs(energy - g_prev_energy) < STATIC_ENERGY_THRESHOLD:
+        if g_prev_energy - energy < STATIC_ENERGY_THRESHOLD:
             g_static_energy_combo += 1
         else:
             g_static_energy_combo = 0

@@ -6,6 +6,7 @@ import scipy.stats
 from igraph import Graph
 import itertools
 np.warnings.filterwarnings('ignore')
+import matplotlib.pyplot as plt
 
 GC_BGD = 0 # Hard bg pixel
 GC_FGD = 1 # Hard fg pixel, will not be used
@@ -38,7 +39,7 @@ def grabcut(img, rect, n_components=5):
         bgGMM, fgGMM = update_GMMs(img, mask, bgGMM, fgGMM)
         t2 = time.time()
         print(f'[iter {i}] Took {(t2-t1):.1f}sec. Running calculate_mincut...')
-
+        
         mincut_sets, energy = calculate_mincut(img, mask, bgGMM, fgGMM)
         t3 = time.time()
         print(f'[iter {i}] Took {(t3-t2):.1f}sec, energy {energy:.1f}. Running update_mask...')
@@ -46,7 +47,10 @@ def grabcut(img, rect, n_components=5):
         mask = update_mask(mincut_sets, mask)
         t4 = time.time()
         print(f'[iter {i}] Took {(t4-t3):.1f}sec. Running checking convergence...')
-
+        mask2show = cv2.threshold(mask, 0, 1, cv2.THRESH_BINARY)[1]
+        plt.imsave(f'iter{i}.jpg', mask2show, cmap='gray')
+        # plt.imshow(255 * mask2show, cmap='gray')
+        # plt.title(f'GrabCut Mask iter {i}')
         if check_convergence(energy):
             break
 
@@ -253,7 +257,6 @@ class TLinks(object):
         self._orig_mask_shape = None
         self._mask_f = None
         self._K = None
-        self._edges = None
 
     def update_mask(self, mask):
         self._orig_mask_shape = mask.shape
@@ -297,13 +300,11 @@ class TLinks(object):
             return [(SOURCE_NODE, z), (z, SINK_NODE)]
         raise TypeError(f'Unknown mask type at {z}')
     
-    @property
-    def edges(self):
+    def get_edges(self):
         mask_f = self._mask_f
-        if self._edges is None:
-            dual_edges = [self.index_to_edges(z) for z in range(self._img_f.shape[0])]
-            self._edges = list(itertools.chain(*dual_edges))
-        return self._edges
+        dual_edges = [self.index_to_edges(z) for z in range(self._img_f.shape[0])]
+        edges = list(itertools.chain(*dual_edges))
+        return edges
     
     def get_weights(self, bgGMM, fgGMM):
         weights_sets = [self.index_to_weights(z, bgGMM, fgGMM) for z in range(self._img_f.shape[0])]
@@ -317,9 +318,12 @@ class Grabcut(object):
         self._tlinks.set_K(self._nlinks.K)
     
     def calculate_edges_weights(self, mask, bgGMM, fgGMM):
+        print('calculate_edges_weights hi')
         self._tlinks.update_mask(mask)
-        edges = self._nlinks.edges + self._tlinks.edges
+        edges = self._nlinks.edges + self._tlinks.get_edges()
         weights = self._nlinks.weights + self._tlinks.get_weights(bgGMM, fgGMM)
+        print('calculate_edges_weights bye')
+
         return edges, weights
     
     @property
@@ -405,11 +409,13 @@ def update_GMMs(img, mask, bgGMM, fgGMM):
     bgVals = img[(GC_BGD == mask) + (GC_PR_BGD == mask)]
     
     if len(bgVals) <= 1:
+        print('NO bg vals')
         bgGMM = None
     else:
         bgGMM.fit(bgVals)
 
     if len(fgVals) <= 1:
+        print('NO fg vals')
         fgGMM = None
     else:
         fgGMM.fit(fgVals)   
@@ -418,28 +424,39 @@ def update_GMMs(img, mask, bgGMM, fgGMM):
 
 def calculate_mincut(img, mask, bgGMM, fgGMM):
     # TODO: implement energy (cost) calculation step and mincut
+    print('calculate_mincut\tenter')
     global g_grabcut
     min_cut = [[], []]
     energy = 0
     # Build graph
     if not bgGMM or not fgGMM:
+        print(f'BOOHOO bgGMM:{bool(bgGMM)} fgGMM:{bool(fgGMM)}')
         return min_cut, energy
-    
+    print('graphing and stuff')
     g = Graph()
+    print('1')
     g.add_vertices(range(img.shape[0] * img.shape[1]))
+    print('2')
     g.add_vertex(name=SOURCE_NODE)
     g.add_vertex(name=SINK_NODE)
+    print('3')
     edges, weights = g_grabcut.calculate_edges_weights(mask, bgGMM, fgGMM)
+    print('4')
     g.add_edges(edges)
+    print('5')
     min_cut_ext = g.st_mincut(SOURCE_NODE, SINK_NODE, weights)
+    print('6')
     source_sink_indexes = [g.vs.find(SOURCE_NODE).index, g.vs.find(SINK_NODE).index]
     min_cut = tuple([i for i in cut if i not in source_sink_indexes] for cut in min_cut_ext)
+    print('7')
     energy = min_cut_ext.value
-    
+    print('8')
+
     return min_cut, energy
 
 def update_mask(mincut_sets, mask):
     if not np.any(mincut_sets):
+        print('dammit should exit')
         global g_should_exit
         g_should_exit = True
         return mask
@@ -448,10 +465,11 @@ def update_mask(mincut_sets, mask):
     mask_f = mask.flatten()
     condition__gc_pr_bgd = np.logical_and(np.isin(np.arange(mask_f.size), mincut_sets[0]), mask_f == GC_PR_FGD)
     condition__gc_pr_fgd = np.logical_and(np.isin(np.arange(mask_f.size), mincut_sets[1]), mask_f == GC_PR_BGD)
-    mask = np.where(condition__gc_pr_bgd, GC_PR_BGD,
+    mask = np.where(condition__gc_pr_bgd, GC_BGD,
                     np.where(condition__gc_pr_fgd, GC_PR_FGD, mask_f)).reshape(mask.shape)
     global g_grabcut
     g_grabcut.update_mask(mask)
+
     print(f'Number of mask changes (prev {np.sum(old_mask)} new {np.sum(mask)}: {np.sum(np.nonzero(old_mask - mask))}')
     return mask
 
@@ -462,6 +480,7 @@ g_prev_energy = None
 def check_convergence(energy):
     global g_should_exit
     if not energy or g_should_exit:
+        print('Converged by error')
         return True
     
     global g_static_energy_combo
@@ -475,6 +494,8 @@ def check_convergence(energy):
     
     g_prev_energy = energy
     convergence = g_static_energy_combo >= STATIC_ENERGY_CONVERGENCE_COMBO
+    if (convergence):
+        print('Goodbye')
 
     return convergence
 

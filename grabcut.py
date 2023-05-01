@@ -331,6 +331,9 @@ class MyGMM(object):
     def fit(self, values):
         # TODO: calcualte by ourselves
         self._n_components = min(self._n_components, len(values))
+        if self._n_components == 1:
+            values = np.repeat(values, 2, axis=0)
+            
         mixture = sklearn.mixture.GaussianMixture(self.n_components, init_params='kmeans').fit(values)
         self._mixture = mixture
         self._dists = [scipy.stats.multivariate_normal(mixture.means_[i], mixture.covariances_[i])

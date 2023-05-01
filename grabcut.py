@@ -169,8 +169,8 @@ class NLinks(object):
     @property
     def N_for_directions(self):
         if self._N_for_directions is None:
-            N_down = self._N_from_square_diffs_matrix(self.right_square_diff, 1)
-            N_right = self._N_from_square_diffs_matrix(self.down_square_diff, 1)
+            N_down = self._N_from_square_diffs_matrix(self.down_square_diff, 1)
+            N_right = self._N_from_square_diffs_matrix(self.right_square_diff, 1)
             N_downright = self._N_from_square_diffs_matrix(self.downright_square_diff, np.sqrt(2))
             N_downleft = self._N_from_square_diffs_matrix(self.downleft_square_diff, np.sqrt(2)) 
             self._N_for_directions = (N_down, N_right, N_downright, N_downleft, )
@@ -182,7 +182,7 @@ class NLinks(object):
         N_down, N_right, N_downright, N_downleft = self.N_for_directions
         
         # 2. Replicate the 4 basic to all the 8 N-links
-        N_link_sum_per_pixel = np.zeros(self._img.shape)
+        N_link_sum_per_pixel = np.zeros(self._img.shape[:2])
         # Up-left
         N_link_sum_per_pixel[1:, 1:] += N_downright
         # Up

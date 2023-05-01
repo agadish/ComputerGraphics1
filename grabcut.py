@@ -14,6 +14,7 @@ GC_PR_FGD = 3 # Soft fg pixel
 SOURCE_NODE = 'source'
 SINK_NODE = 'sink'
 EPSILON = 0.00001
+
 import time
 
 # Define the GrabCut algorithm function
@@ -275,19 +276,32 @@ class TLinks(object):
         mask_f = self._mask_f
         img_f = self._img_f
         if GC_BGD == mask_f[z]:
-            return [0, self._K]
+            return [self._K]
         if GC_FGD == mask_f[z]:
-            return [self._K, 0]
+            return [self._K]
         if mask_f[z] in (GC_PR_BGD, GC_PR_FGD, ):
-            fg_weight = self.calculate_D(img_f[z], fgGMM.means_, fgGMM.determinants_, fgGMM.icovariances_, fgGMM.weights_, fgGMM.n_components)
-            bg_weight = self.calculate_D(img_f[z], bgGMM.means_, bgGMM.determinants_, bgGMM.icovariances_, bgGMM.weights_, bgGMM.n_components)
-            return [fg_weight, bg_weight]
+            bg_weight = self.calculate_D(img_f[z], fgGMM.means_, fgGMM.determinants_, fgGMM.icovariances_, fgGMM.weights_, fgGMM.n_components)
+            fg_weight = self.calculate_D(img_f[z], bgGMM.means_, bgGMM.determinants_, bgGMM.icovariances_, bgGMM.weights_, bgGMM.n_components)
+            return [bg_weight, fg_weight]
+        raise TypeError(f'Unknown mask type at {z}')
+
+    @requires_mask
+    def index_to_edges(self, z):
+        mask_f = self._mask_f
+        img_f = self._img_f
+        if GC_BGD == mask_f[z]:
+            return [(SOURCE_NODE, z)]
+        if GC_FGD == mask_f[z]:
+            return [(z, SINK_NODE)]
+        if mask_f[z] in (GC_PR_BGD, GC_PR_FGD, ):
+            return [(SOURCE_NODE, z), (z, SINK_NODE)]
         raise TypeError(f'Unknown mask type at {z}')
     
     @property
     def edges(self):
+        mask_f = self._mask_f
         if self._edges is None:
-            dual_edges = [[(SOURCE_NODE, z), (z, SINK_NODE) ] for z in range(self._img_f.shape[0])]
+            dual_edges = [self.index_to_edges(z) for z in range(self._img_f.shape[0])]
             self._edges = list(itertools.chain(*dual_edges))
         return self._edges
     
@@ -300,7 +314,7 @@ class Grabcut(object):
     def __init__(self, img):
         self._nlinks = NLinks(img)
         self._tlinks = TLinks(img)
-        self._tlinks.set_K(NLinks.K)
+        self._tlinks.set_K(self._nlinks.K)
     
     def calculate_edges_weights(self, mask, bgGMM, fgGMM):
         self._tlinks.update_mask(mask)
@@ -373,7 +387,7 @@ class MyGMM(object):
     def weights_(self):
         return self._mixture.weights_
 
-    
+g_should_exit = False
 g_grabcut = None
 def initalize_GMMs(img, mask, n_components=5):
     global g_grabcut
@@ -390,12 +404,12 @@ def update_GMMs(img, mask, bgGMM, fgGMM):
     fgVals = img[(GC_FGD == mask) + (GC_PR_FGD == mask)]
     bgVals = img[(GC_BGD == mask) + (GC_PR_BGD == mask)]
     
-    if not np.any(bgVals):
+    if len(bgVals) <= 1:
         bgGMM = None
     else:
         bgGMM.fit(bgVals)
 
-    if not np.any(fgVals):
+    if len(fgVals) <= 1:
         fgGMM = None
     else:
         fgGMM.fit(fgVals)   
@@ -416,7 +430,6 @@ def calculate_mincut(img, mask, bgGMM, fgGMM):
     g.add_vertex(name=SOURCE_NODE)
     g.add_vertex(name=SINK_NODE)
     edges, weights = g_grabcut.calculate_edges_weights(mask, bgGMM, fgGMM)
-    print(f'added {len(edges)} edges, correspoding {len(weights)} weights')
     g.add_edges(edges)
     min_cut_ext = g.st_mincut(SOURCE_NODE, SINK_NODE, weights)
     source_sink_indexes = [g.vs.find(SOURCE_NODE).index, g.vs.find(SINK_NODE).index]
@@ -427,12 +440,14 @@ def calculate_mincut(img, mask, bgGMM, fgGMM):
 
 def update_mask(mincut_sets, mask):
     if not np.any(mincut_sets):
-        return None
+        global g_should_exit
+        g_should_exit = True
+        return mask
     
     old_mask = mask
     mask_f = mask.flatten()
-    condition__gc_pr_fgd = np.logical_and(np.isin(np.arange(mask_f.size), mincut_sets[0]), mask_f == GC_PR_BGD)
-    condition__gc_pr_bgd = np.logical_and(np.isin(np.arange(mask_f.size), mincut_sets[1]), mask_f == GC_PR_FGD)
+    condition__gc_pr_bgd = np.logical_and(np.isin(np.arange(mask_f.size), mincut_sets[0]), mask_f == GC_PR_FGD)
+    condition__gc_pr_fgd = np.logical_and(np.isin(np.arange(mask_f.size), mincut_sets[1]), mask_f == GC_PR_BGD)
     mask = np.where(condition__gc_pr_bgd, GC_PR_BGD,
                     np.where(condition__gc_pr_fgd, GC_PR_FGD, mask_f)).reshape(mask.shape)
     global g_grabcut
@@ -445,10 +460,10 @@ STATIC_ENERGY_THRESHOLD = 2000
 g_static_energy_combo = 0
 g_prev_energy = None
 def check_convergence(energy):
-    if not energy:
+    global g_should_exit
+    if not energy or g_should_exit:
         return True
     
-    # TODO: implement convergence check
     global g_static_energy_combo
     global g_prev_energy
     

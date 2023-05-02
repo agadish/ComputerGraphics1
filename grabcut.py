@@ -5,6 +5,7 @@ import sklearn.mixture
 import scipy.stats
 from igraph import Graph
 import itertools
+from sklearn.cluster import KMeans
 np.warnings.filterwarnings('ignore')
 import time
 import matplotlib.pyplot as plt
@@ -17,7 +18,7 @@ SOURCE_NODE = 'source'
 SINK_NODE = 'sink'
 EPSILON = 0.00001
 STATIC_ENERGY_CONVERGENCE_COMBO = 2
-STATIC_ENERGY_THRESHOLD = 20000
+STATIC_ENERGY_THRESHOLD = 500000
 
 
 
@@ -51,7 +52,8 @@ def grabcut(img, rect, n_components=5):
         t4 = time.time()
         print(f'[iter {i}] Took {(t4-t3):.1f}sec. Running checking convergence...')
         mask2show = cv2.threshold(mask, 0, 1, cv2.THRESH_BINARY)[1]
-        plt.imsave(f'iter{i}.jpg', mask2show, cmap='gray')
+        global g_img_name
+        plt.imsave(f'{g_img_name}_iter{i}.jpg', mask2show, cmap='gray')
         # plt.imshow(255 * mask2show, cmap='gray')
         # plt.title(f'GrabCut Mask iter {i}')
         if check_convergence(energy):
@@ -344,36 +346,58 @@ class Grabcut(object):
 
 class MyGMM(object):
     def __init__(self, n_components):
-        self._n_components = n_components
+        self.set_n_components(n_components)
         self._nlinks = None
         self._icovariances = None
         self._determinants = None
         self._data_dim = 3
+        self._weights_div_sqrt_dets = None
+
+    def set_n_components(self, n_components):
+        self._n_components = n_components
+        self._kmeans = KMeans(self._n_components)
+        self._covariances = None
     
     def fit(self, values):
-        # TODO: calcualte by ourselves
-        self._n_components = min(self._n_components, len(values))
-        if self._n_components == 1:
+        if not np.any(values) or not self._n_components:
+            self._means = np.array([])
+            self._covariances = np.array([])
+            return
+        
+        # Decrease number of components in case of too little data, reset kmeans
+        n_components = min(self._n_components, len(values))
+        self.set_n_components(n_components)
+        
+        is_dummy = len(values) == 1
+        if is_dummy:
             values = np.repeat(values, 2, axis=0)
+
+        # 2. Fit to data
+        self._kmeans.fit(values)
+
+        # 3. Save means and covariances
+        self._means = self._kmeans.cluster_centers_
+        self._weights = np.bincount(self._kmeans.labels_) / len(values)
+        if is_dummy:
+            self._covariances = np.identity(self._data_dim) * EPSILON
+        else:
+            self._covariances = np.array([np.cov(values[self._kmeans.labels_ == i].T)
+                                          for i in range(n_components)])
             
-        mixture = sklearn.mixture.GaussianMixture(self.n_components, init_params='kmeans').fit(values)
-        self._mixture = mixture
-        self._dists = [scipy.stats.multivariate_normal(mixture.means_[i], mixture.covariances_[i])
-                       for i in range(self.n_components)]
-    
+        self._dists = [scipy.stats.multivariate_normal(self._means[i], self._covariances[i])
+                       for i in range(n_components)]
+        
     @property
     def dists(self):
         return self._dists
     
     @property
     def means_(self):
-        return self._mixture.means_
+        return self._means
     
     @property
     def covariances_(self):
-        if 1 == self.n_components:
-            return np.identity(self._data_dim) * EPSILON
-        return self._mixture.covariances_
+        return self._covariances
         
     @property
     def icovariances_(self):
@@ -393,7 +417,32 @@ class MyGMM(object):
     
     @property
     def weights_(self):
-        return self._mixture.weights_
+        return self._weights
+    
+    @property
+    def weights_div_sqrt_dets(self):
+        if self._weights_div_sqrt_dets is None:
+            self._weights_div_sqrt_dets = self.weights_ / np.sqrt(self.determinants_)
+        return self._weights_div_sqrt_dets
+    
+    def calculate_D(self, values):
+        factor = self.weights_div_sqrt_dets
+        exponent = np.exp(0.5 * np.array([self._calc_probability(values, i) for i in range(self._n_components)]))
+        result = -np.log(factor @ exponent)
+        return result
+    
+    def _calc_probability(self, values, i):
+        diff_from_mean_t = values - self.means_[i]
+        prob_i = np.sum(np.multiply(diff_from_mean_t @ self.icovariances_[i], diff_from_mean_t), axis=1)
+        return prob_i
+
+        D = len(mean)
+        cov_inv = np.linalg.inv(cov)
+        det = np.linalg.det(cov)
+        factor = self.weights_div_sqrt_dets
+        x_mean = values - self.means_
+        exponent = np.sum(-0.5 * (np.dot(x_mean, cov_inv) * x_mean), axis=1)
+        pdf = norm_const * np.exp(exponent)
 
 g_should_exit = False
 g_grabcut = None
@@ -516,7 +565,7 @@ def cal_metric(predicted_mask, gt_mask):
     else:
         jaccard_value = predicted_intersection_count / total_predictable
     return accuracy, jaccard_value
-
+g_img_name = ''
 def parse():
     parser = argparse.ArgumentParser()
     parser.add_argument('--input_name', type=str, default='banana1', help='name of image from the course files')
@@ -535,12 +584,12 @@ if __name__ == '__main__':
         input_path = f'data/imgs/{args.input_name}.jpg'
     else:
         input_path = args.input_img_path
-
+    g_img_name = args.input_name
     if args.use_file_rect:
         rect = tuple(map(int, open(f"data/bboxes/{args.input_name}.txt", "r").read().split(' ')))
     else:
         rect = tuple(map(int,args.rect.split(',')))
-
+    
     img = cv2.imread(input_path)
     
     # Run the GrabCut algorithm on the image and bounding box
@@ -559,6 +608,6 @@ if __name__ == '__main__':
     cv2.imshow('Original Image', img)
     cv2.imshow('GrabCut Mask', 255 * mask)
     cv2.imshow('GrabCut Result', img_cut)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
+    import time ; time.sleep(30)

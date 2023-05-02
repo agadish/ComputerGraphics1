@@ -88,9 +88,9 @@ def laplacian_matrix(n, m, omega):
 
 def parse():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--src_path', type=str, default='.data/imgs/banana2.jpg', help='image file path')
-    parser.add_argument('--mask_path', type=str, default='.data/seg_GT/banana1.bmp', help='mask file path')
-    parser.add_argument('--tgt_path', type=str, default='.data/bg/wall.jpg', help='mask file path')
+    parser.add_argument('--src_path', type=str, default='./data/imgs/banana1.jpg', help='image file path')
+    parser.add_argument('--mask_path', type=str, default='./data/seg_GT/banana1.bmp', help='mask file path')
+    parser.add_argument('--tgt_path', type=str, default='./data/bg/table.jpg', help='mask file path')
     return parser.parse_args()
 
 if __name__ == "__main__":

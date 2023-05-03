@@ -11,7 +11,7 @@ from igraph import Graph
 import itertools
 np.warnings.filterwarnings('ignore')
 import time
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
 
 GC_BGD = 0 # Hard bg pixel
@@ -36,8 +36,6 @@ def grabcut(img, rect, n_components=5):
     #Initalize the inner square to Foreground
     mask[y:y+h, x:x+w] = GC_PR_FGD
     mask[(rect[1]+rect[3])//2, (rect[0]+rect[2])//2] = GC_FGD
-    plt.figure()
-    plt.imshow(img[y:y+h, x:x+w])
     bgGMM, fgGMM = initalize_GMMs(img, mask, n_components=n_components)
 
     num_iters = 1000
@@ -56,9 +54,9 @@ def grabcut(img, rect, n_components=5):
         mask = update_mask(mincut_sets, mask)
         t4 = time.time()
         print(f'[iter {i}] Took {(t4-t3):.1f}sec. Running checking convergence...')
-        mask2show = cv2.threshold(np.where(mask == GC_PR_BGD, GC_BGD, mask), 0, 1, cv2.THRESH_BINARY)[1]
-        global g_img_name
-        plt.imsave(f'{g_img_name}_iter{i}_energy{energy:.1f}_small.jpg', mask2show, cmap='gray')
+        # mask2show = cv2.threshold(np.where(mask == GC_PR_BGD, GC_BGD, mask), 0, 1, cv2.THRESH_BINARY)[1]
+        # global g_img_name
+        # plt.imsave(f'{g_img_name}_iter{i}_energy{energy:.1f}_small.jpg', mask2show, cmap='gray')
         # plt.imshow(255 * mask2show, cmap='gray')
         # plt.title(f'GrabCut Mask iter {i}')
         if check_convergence(energy):
@@ -576,7 +574,7 @@ if __name__ == '__main__':
         rect = tuple(map(int, open(f"data/bboxes/{args.input_name}.txt", "r").read().split(' ')))
     else:
         rect = tuple(map(int,args.rect.split(',')))
-    g_img_name = args.input_name    
+    # g_img_name = args.input_name    
     img = cv2.imread(input_path)
     # blurred_img = cv2.blur(img, ksize=(30, 30))
     # img = blurred_img

@@ -17,9 +17,8 @@ GC_PR_FGD = 3 # Soft fg pixel
 SOURCE_NODE = 'source'
 SINK_NODE = 'sink'
 EPSILON = 0.00001
-STATIC_ENERGY_CONVERGENCE_COMBO = 4
-STATIC_ENERGY_THRESHOLD = 20000
-
+STATIC_ENERGY_CONVERGENCE_COMBO = 3
+STATIC_ENERGY_THRESHOLD = 50000
 
 
 # Define the GrabCut algorithm function
@@ -387,13 +386,13 @@ class Grabcut(object):
 
         return edges, weights
     
-    @property
-    def edges(self):
-        return self._nlinks.edges + self._tlinks.edges
+    # @property
+    # def edges(self):
+    #     return self._nlinks.edges + self._tlinks.get_edges()
     
-    @property
-    def weights(self):
-        return self._nlinks.weights + self._tlinks.weights
+    # @property
+    # def weights(self):
+    #     return self._nlinks.weights + self._tlinks.weights
     
     def update_mask(self, mask):
         self._tlinks.update_mask(mask)
@@ -542,22 +541,15 @@ class MyGMMReal(object):
     
     def calculate_D(self, values):
         factor = self.weights_div_sqrt_dets
-        exponent = np.exp(-0.5 * np.array([self._calc_probability(values, i) for i in range(self._n_components)]))
+        exponent = np.exp(-0.5 * np.array([self._calc_matmuls_for_component(values, i) for i in range(self._n_components)]))
         result = -np.log(factor @ exponent)
         return result
     
-    def _calc_probability(self, values, i):
+    def _calc_matmuls_for_component(self, values, i):
+        # See claim 2.1 in documentation
         diff_from_mean_t = values - self.means_[i]
         prob_i = np.sum(np.multiply(diff_from_mean_t @ self.icovariances_[i], diff_from_mean_t), axis=1)
         return prob_i
-
-        D = len(mean)
-        cov_inv = np.linalg.inv(cov)
-        det = np.linalg.det(cov)
-        factor = self.weights_div_sqrt_dets
-        x_mean = values - self.means_
-        exponent = np.sum(-0.5 * (np.dot(x_mean, cov_inv) * x_mean), axis=1)
-        pdf = norm_const * np.exp(exponent)
 
 g_should_exit = False
 g_grabcut = None
@@ -665,9 +657,11 @@ def check_convergence(energy):
 
     if g_prev_energy is not None:
         if g_prev_energy - energy < STATIC_ENERGY_THRESHOLD or energy > g_lowest_energy_in_threshold:
+            print(f'Convergence: not changed, combo{g_static_energy_combo}')
             g_static_energy_combo += 1
             g_lowest_energy_in_threshold = min(g_lowest_energy_in_threshold, energy)
         else:
+            print(f'Convergence: not yet')
             g_static_energy_combo = 0
     
     g_prev_energy = energy

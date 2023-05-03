@@ -108,7 +108,6 @@ if __name__ == "__main__":
     center = (int(im_tgt.shape[0] / 2), int(im_tgt.shape[1] / 2)) # opposite? 1,0
 
     im_clone = poisson_blend(im_src, im_tgt, im_mask, center)
-    #cv2.imwrite('C:/Users/meshy/OneDrive/Documents/VSWorkspace/Graphics_2023/banana2_banana1_grass_mountains.png',im_clone)
     cv2.imshow('Cloned image', im_clone)
     cv2.waitKey(0)
     cv2.destroyAllWindows()

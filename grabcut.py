@@ -17,8 +17,9 @@ GC_PR_FGD = 3 # Soft fg pixel
 SOURCE_NODE = 'source'
 SINK_NODE = 'sink'
 EPSILON = 0.00001
-STATIC_ENERGY_CONVERGENCE_COMBO = 3
-STATIC_ENERGY_THRESHOLD = 50000
+STATIC_ENERGY_CONVERGENCE_COMBO = 5
+STATIC_ENERGY_PERCENT_THRESHOLD = 0.97
+STATIC_ENERGY_THRESHOLD = 10000
 
 
 # Define the GrabCut algorithm function
@@ -50,11 +51,13 @@ def grabcut(img, rect, n_components=5):
         mask = update_mask(mincut_sets, mask)
         t4 = time.time()
         print(f'[iter {i}] Took {(t4-t3):.1f}sec. Running checking convergence...')
-        mask2show = cv2.threshold(mask, 0, 1, cv2.THRESH_BINARY)[1]
-        plt.imsave(f'iter{i}_energy{energy:.1f}.jpg', mask2show, cmap='gray')
-        plt.imshow(255 * mask2show, cmap='gray')
-        plt.title(f'GrabCut Mask iter {i}')
+        mask2show = cv2.threshold(np.where(mask == GC_PR_BGD, GC_BGD, mask), 0, 1, cv2.THRESH_BINARY)[1]
+        global g_img_name
+        plt.imsave(f'{g_img_name}_iter{i}_energy{energy:.1f}.jpg', mask2show, cmap='gray')
+        # plt.imshow(255 * mask2show, cmap='gray')
+        # plt.title(f'GrabCut Mask iter {i}')
         if check_convergence(energy):
+            mask[GC_PR_BGD] = GC_BGD
             break
 
     # Return the final mask and the GMMs
@@ -498,8 +501,8 @@ class MyGMMReal(object):
             self._covariances = np.array([np.cov(values[self._kmeans.labels_ == i].T)
                                           for i in range(n_components)])
             
-        self._dists = [scipy.stats.multivariate_normal(self._means[i], self._covariances[i])
-                       for i in range(n_components)]
+        # self._dists = [scipy.stats.multivariate_normal(self._means[i], self._covariances[i])
+                    #    for i in range(n_components)]
         
     @property
     def dists(self):
@@ -516,7 +519,13 @@ class MyGMMReal(object):
     @property
     def icovariances_(self):
         if self._icovariances is None:
-            self._icovariances = np.linalg.inv(self.covariances_)
+            try:
+                self._icovariances = np.linalg.inv(self.covariances_)
+            except np.linalg.LinAlgError as e:
+                pseudo_covs = [c + EPSILON * np.identity(self._covariances.shape[-1]) for c in self._covariances]
+                self._icovariances = np.linalg.inv(pseudo_covs)
+
+
         return self._icovariances
         
     @property
@@ -631,7 +640,7 @@ def update_mask(mincut_sets, mask):
     mask_f = mask.flatten()
     condition__gc_pr_bgd = np.logical_and(np.isin(np.arange(mask_f.size), mincut_sets[0]), mask_f == GC_PR_FGD)
     condition__gc_pr_fgd = np.logical_and(np.isin(np.arange(mask_f.size), mincut_sets[1]), mask_f == GC_PR_BGD)
-    mask = np.where(condition__gc_pr_bgd, GC_BGD,
+    mask = np.where(condition__gc_pr_bgd, GC_PR_BGD,
                     np.where(condition__gc_pr_fgd, GC_PR_FGD, mask_f)).reshape(mask.shape)
     global g_grabcut
     g_grabcut.update_mask(mask)
@@ -656,13 +665,14 @@ def check_convergence(energy):
         g_lowest_energy_in_threshold = energy
 
     if g_prev_energy is not None:
-        if g_prev_energy - energy < STATIC_ENERGY_THRESHOLD or energy > g_lowest_energy_in_threshold:
-            print(f'Convergence: not changed, combo{g_static_energy_combo}')
+        if g_prev_energy * STATIC_ENERGY_PERCENT_THRESHOLD < energy or energy > g_lowest_energy_in_threshold:
+            print(f'Convergence: combo{g_static_energy_combo}, got energy {energy:.1f} prev {g_prev_energy:.1f}')
             g_static_energy_combo += 1
             g_lowest_energy_in_threshold = min(g_lowest_energy_in_threshold, energy)
         else:
             print(f'Convergence: not yet')
             g_static_energy_combo = 0
+            g_lowest_energy_in_threshold = None
     
     g_prev_energy = energy
     convergence = g_static_energy_combo >= STATIC_ENERGY_CONVERGENCE_COMBO
@@ -679,7 +689,8 @@ def cal_metric(predicted_mask, gt_mask):
     else:
         accuracy = np.sum(predicted_mask != gt_mask) / gt_mask.size
 
-    predicted_intersection_count = np.sum(np.logical_and(predicted_mask == gt_mask, (predicted_mask == GC_PR_FGD) + (predicted_mask == GC_FGD)))
+    predicted_intersection_count = np.sum(np.logical_and(predicted_mask == gt_mask,
+                                                         (predicted_mask == GC_PR_FGD) + (predicted_mask == GC_FGD)))
     total_predictable = np.sum((predicted_mask == GC_PR_FGD) + (predicted_mask == GC_FGD) + (gt_mask == GC_PR_FGD) + (gt_mask == GC_FGD))
     if not total_predictable:
         jaccard_value = 1
@@ -689,7 +700,7 @@ def cal_metric(predicted_mask, gt_mask):
 
 def parse():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input_name', type=str, default='banana1', help='name of image from the course files')
+    parser.add_argument('--input_name', type=str, default='fullmoon', help='name of image from the course files')
     parser.add_argument('--eval', type=int, default=1, help='calculate the metrics')
     parser.add_argument('--input_img_path', type=str, default='', help='if you wish to use your own img_path')
     parser.add_argument('--use_file_rect', type=int, default=1, help='Read rect from course files')
@@ -710,9 +721,8 @@ if __name__ == '__main__':
         rect = tuple(map(int, open(f"data/bboxes/{args.input_name}.txt", "r").read().split(' ')))
     else:
         rect = tuple(map(int,args.rect.split(',')))
-
+    g_img_name = args.input_name    
     img = cv2.imread(input_path)
-    
     # Run the GrabCut algorithm on the image and bounding box
     mask, bgGMM, fgGMM = grabcut(np.asarray(img, dtype=np.float64), rect)
     mask = cv2.threshold(mask, 0, 1, cv2.THRESH_BINARY)[1]
@@ -726,9 +736,9 @@ if __name__ == '__main__':
 
     # Apply the final mask to the input image and display the results
     img_cut = img * (mask[:, :, np.newaxis])
-    cv2.imshow('Original Image', img)
-    cv2.imshow('GrabCut Mask', 255 * mask)
-    cv2.imshow('GrabCut Result', img_cut)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    # cv2.imshow('Original Image', img)
+    # cv2.imshow('GrabCut Mask', 255 * mask)
+    # cv2.imshow('GrabCut Result', img_cut)
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
 
